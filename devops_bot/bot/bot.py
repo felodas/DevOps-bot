@@ -2,12 +2,14 @@ import logging
 import os
 import datetime
 import psycopg2
+from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
+load_dotenv()
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8795566881:AAHbjAAfJAodCHpb6AehKODuOKM5tKuHU8w")
-DB_HOST = os.getenv("DB_HOST", "db")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = os.getenv("DB_PORT", "5432")
 DB_NAME = os.getenv("DB_NAME", "db")
 DB_USER = os.getenv("DB_USER", "user")
