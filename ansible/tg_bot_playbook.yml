@@ -1,0 +1,148 @@
+---
+- name: Настройка Master PostgreSQL
+  hosts: dbhost
+  become: yes
+  tasks:
+    - name: Установка PostgreSQL
+      apt:
+        name: postgresql
+        state: present
+        update_cache: yes
+
+    - name: Запуск PostgreSQL
+      systemd:
+        name: postgresql
+        state: started
+        enabled: yes
+
+    - name: Настройка pg_hba.conf
+      lineinfile:
+        path: /etc/postgresql/17/main/pg_hba.conf
+        line: "{{ item }}"
+      loop:
+        - "host all all 0.0.0.0/0 md5"
+        - "host replication all 0.0.0.0/0 md5"
+      notify: restart postgresql
+
+    - name: Создание БД и таблиц (под код бота)
+      become: yes
+      become_user: postgres
+      raw: |
+        psql -c "ALTER USER postgres WITH PASSWORD 'postgres';" || true
+        psql -c "CREATE DATABASE db_customers;" || true
+        psql -d db_customers -c "CREATE TABLE IF NOT EXISTS test (
+          id SERIAL PRIMARY KEY,
+          name VARCHAR(100) NOT NULL,
+          value VARCHAR(100) NOT NULL,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );"
+        psql -d db_customers -c "INSERT INTO test (name, value) VALUES 
+          ('test1', 'value1'), 
+          ('test2', 'value2'), 
+          ('test3', 'value3') ON CONFLICT DO NOTHING;"
+        psql -c "CREATE USER repl_user WITH REPLICATION PASSWORD 'repl_pass';" || true
+        psql -c "GRANT ALL PRIVILEGES ON DATABASE db_customers TO repl_user;" || true
+        psql -c "GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO repl_user;" || true
+      ignore_errors: yes
+
+  handlers:
+    - name: restart postgresql
+      systemd:
+        name: postgresql
+        state: restarted
+
+- name: Настройка Slave PostgreSQL
+  hosts: replhost
+  become: yes
+  tasks:
+    - name: Установка PostgreSQL
+      apt:
+        name: postgresql
+        state: present
+
+    - name: Остановка PostgreSQL
+      systemd:
+        name: postgresql
+        state: stopped
+
+    - name: Очистка данных
+      file:
+        path: /var/lib/postgresql/17/main/
+        state: absent
+
+    - name: Копирование данных с master
+      become_user: postgres
+      shell: |
+        PGPASSWORD=repl_pass pg_basebackup -h 192.168.40.155 -D /var/lib/postgresql/17/main/ -U repl_user -P -R
+
+    - name: Запуск PostgreSQL
+      systemd:
+        name: postgresql
+        state: started
+
+- name: Настройка бота
+  hosts: bothost
+  become: yes
+  vars:
+    bot_token: "8795566881:AAHbjAAfJAodCHpb6AehKODuOKM5tKuHU8w"
+    db_host: "192.168.40.155"
+    db_name: "db_customers"
+    db_user: "postgres"
+    db_password: "postgres"
+    db_port: "5432"
+
+  tasks:
+    - name: Установка пакетов
+      apt:
+        name:
+          - python3
+          - python3-pip
+          - git
+        state: present
+
+    - name: Клонирование репозитория
+      git:
+        repo: https://github.com/felodas/DevOps-bot.git
+        dest: /opt/tg_bot
+        version: docker
+
+    - name: Установка python3-venv
+      apt:
+        name: python3-venv
+        state: present
+
+    - name: Создание виртуального окружения
+      shell: |
+        cd /opt/tg_bot
+        python3 -m venv venv
+
+    - name: Установка libpq-dev для psycopg2
+      apt:
+        name: libpq-dev
+        state: present
+
+    - name: Установка зависимостей в venv
+      shell: |
+        cd /opt/tg_bot
+        source venv/bin/activate
+        pip install --upgrade pip
+        pip install python-telegram-bot==21.0 psycopg2-binary==2.9.10 python-dotenv==1.0.0
+      args:
+        executable: /bin/bash
+
+    - name: Создание .env файла
+      copy:
+        content: |
+          BOT_TOKEN={{ bot_token }}
+          DB_HOST={{ db_host }}
+          DB_PORT={{ db_port }}
+          DB_NAME={{ db_name }}
+          DB_USER={{ db_user }}
+          DB_PASSWORD={{ db_password }}
+        dest: /opt/tg_bot/devops_bot/bot/.env
+        mode: '0600'
+
+    - name: Запуск бота через venv
+      shell: |
+        cd /opt/tg_bot/devops_bot/bot
+        nohup /opt/tg_bot/venv/bin/python bot.py > /var/log/tg_bot.log 2>&1 &
